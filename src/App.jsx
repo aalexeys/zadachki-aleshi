@@ -1,11 +1,5 @@
-import React, { useEffect, useMemo, useState } from "react";
-
-const STORAGE_KEYS = {
-  projects: "project_todo_dashboard_projects_",
-  auth: "project_todo_dashboard_auth",
-  users: "project_todo_dashboard_users",
-  currentUser: "project_todo_dashboard_current_user",
-};
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import { dbGetUser, dbCreateUser, dbGetProjects, dbSaveProjects } from "./firebase";
 
 // Для личного использования на GitHub Pages.
 // Важно: это фронтенд-логин. Он скрывает интерфейс, но не является полноценной серверной защитой.
@@ -14,13 +8,6 @@ const AUTH = {
   login: "admin",
   password: "admin123",
 };
-
-const DEFAULT_USERS = [
-  {
-    login: AUTH.login,
-    password: AUTH.password,
-  },
-];
 
 const initialProjects = [
   {
@@ -195,66 +182,19 @@ function formatFullDate(date) {
   }).format(date);
 }
 
-function getProjectsStorageKey(userLogin) {
-  return `${STORAGE_KEYS.projects}${userLogin || "guest"}`;
-}
-
-function loadProjects(userLogin) {
-  try {
-    const saved = localStorage.getItem(getProjectsStorageKey(userLogin));
-
-    if (saved) {
-      return JSON.parse(saved);
-    }
-
-    // Только admin получает тестовые проекты.
-    // Все остальные аккаунты стартуют с пустого списка.
-    if (userLogin === AUTH.login) {
-      return initialProjects;
-    }
-
-    return [];
-  } catch {
-    return userLogin === AUTH.login ? initialProjects : [];
-  }
-}
-
-function loadAuth() {
-  try {
-    return localStorage.getItem(STORAGE_KEYS.auth) === "true";
-  } catch {
-    return false;
-  }
-}
-
-function loadUsers() {
-  try {
-    const saved = localStorage.getItem(STORAGE_KEYS.users);
-    return saved ? JSON.parse(saved) : DEFAULT_USERS;
-  } catch {
-    return DEFAULT_USERS;
-  }
-}
-
-function loadCurrentUser() {
-  try {
-    return localStorage.getItem(STORAGE_KEYS.currentUser) || "";
-  } catch {
-    return "";
-  }
-}
 
 export default function ProjectTodoDashboard() {
-  const [isLoggedIn, setIsLoggedIn] = useState(loadAuth);
-  const [users, setUsers] = useState(loadUsers);
-  const [currentUser, setCurrentUser] = useState(loadCurrentUser);
+  const [isLoggedIn, setIsLoggedIn] = useState(() => localStorage.getItem("ptd_auth") === "true");
+  const [currentUser, setCurrentUser] = useState(() => localStorage.getItem("ptd_currentUser") || "");
+  const [isLoading, setIsLoading] = useState(false);
+  const hasInitialLoadedRef = useRef(false);
   const [authMode, setAuthMode] = useState("login");
   const [loginForm, setLoginForm] = useState({ login: "", password: "" });
   const [registerForm, setRegisterForm] = useState({ login: "", password: "", repeatPassword: "" });
   const [loginError, setLoginError] = useState("");
   const [registerError, setRegisterError] = useState("");
 
-  const [projects, setProjects] = useState(() => loadProjects(loadCurrentUser()));
+  const [projects, setProjects] = useState([]);
   const [activeProjectId, setActiveProjectId] = useState("all");
   const [search, setSearch] = useState("");
   const [newProjectName, setNewProjectName] = useState("");
@@ -280,20 +220,33 @@ export default function ProjectTodoDashboard() {
   
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.auth, String(isLoggedIn));
+    localStorage.setItem("ptd_auth", String(isLoggedIn));
   }, [isLoggedIn]);
 
   useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.users, JSON.stringify(users));
-  }, [users]);
-
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEYS.currentUser, currentUser || "");
+    localStorage.setItem("ptd_currentUser", currentUser || "");
   }, [currentUser]);
 
   useEffect(() => {
     if (!currentUser) return;
-    localStorage.setItem(getProjectsStorageKey(currentUser), JSON.stringify(projects));
+    hasInitialLoadedRef.current = false;
+    setIsLoading(true);
+    dbGetProjects(currentUser)
+      .then((items) => {
+        setProjects(items ?? (currentUser === AUTH.login ? initialProjects : []));
+        setIsLoading(false);
+        hasInitialLoadedRef.current = true;
+      })
+      .catch(() => {
+        setProjects(currentUser === AUTH.login ? initialProjects : []);
+        setIsLoading(false);
+        hasInitialLoadedRef.current = true;
+      });
+  }, [currentUser]);
+
+  useEffect(() => {
+    if (!currentUser || !hasInitialLoadedRef.current) return;
+    dbSaveProjects(currentUser, projects);
   }, [projects, currentUser]);
 
   const allTasks = useMemo(() => {
@@ -338,27 +291,32 @@ export default function ProjectTodoDashboard() {
     return projects.filter((project) => project.id === activeProjectId);
   }, [projects, activeProjectId]);
 
-  const handleLogin = (event) => {
+  const handleLogin = async (event) => {
     event.preventDefault();
-
-    const user = users.find(
-      (item) =>
-        item.login === loginForm.login.trim() &&
-        item.password === loginForm.password
-    );
-
-    if (user) {
-      setLoginError("");
-      setCurrentUser(user.login);
-      setProjects(loadProjects(user.login));
-      setIsLoggedIn(true);
-      return;
+    const login = loginForm.login.trim();
+    setIsLoading(true);
+    try {
+      let user = await dbGetUser(login);
+      if (!user && login === AUTH.login && loginForm.password === AUTH.password) {
+        await dbCreateUser(login, AUTH.password);
+        await dbSaveProjects(login, initialProjects);
+        user = { password: AUTH.password };
+      }
+      if (user && user.password === loginForm.password) {
+        setLoginError("");
+        setCurrentUser(login);
+        setIsLoggedIn(true);
+      } else {
+        setLoginError("Неверный логин или пароль");
+        setIsLoading(false);
+      }
+    } catch {
+      setLoginError("Ошибка соединения. Попробуйте снова.");
+      setIsLoading(false);
     }
-
-    setLoginError("Неверный логин или пароль");
   };
 
-  const handleRegister = (event) => {
+  const handleRegister = async (event) => {
     event.preventDefault();
 
     const login = registerForm.login.trim();
@@ -380,31 +338,24 @@ export default function ProjectTodoDashboard() {
       return;
     }
 
-    const exists = users.some(
-      (item) => item.login.toLowerCase() === login.toLowerCase()
-    );
-
-    if (exists) {
-      setRegisterError("Такой логин уже существует");
-      return;
+    setIsLoading(true);
+    try {
+      const existing = await dbGetUser(login);
+      if (existing) {
+        setRegisterError("Такой логин уже существует");
+        setIsLoading(false);
+        return;
+      }
+      await dbCreateUser(login, password);
+      await dbSaveProjects(login, []);
+      setRegisterForm({ login: "", password: "", repeatPassword: "" });
+      setRegisterError("");
+      setAuthMode("login");
+      setLoginForm({ login, password: "" });
+    } catch {
+      setRegisterError("Ошибка соединения. Попробуйте снова.");
     }
-
-    setUsers((prev) => [...prev, { login, password }]);
-
-    localStorage.setItem(
-      getProjectsStorageKey(login),
-      JSON.stringify([])
-    );
-
-    setRegisterForm({
-      login: "",
-      password: "",
-      repeatPassword: "",
-    });
-
-    setRegisterError("");
-    setAuthMode("login");
-    setLoginForm({ login, password: "" });
+    setIsLoading(false);
   };
 
   const logout = () => {
@@ -772,8 +723,8 @@ export default function ProjectTodoDashboard() {
               </div>
             )}
 
-            <button className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700">
-                Войти
+            <button disabled={isLoading} className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50">
+                {isLoading ? "Загрузка..." : "Войти"}
               </button>
             </form>
           ) : (
@@ -807,14 +758,14 @@ export default function ProjectTodoDashboard() {
                 </div>
               )}
 
-              <button className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700">
-                Зарегистрироваться
+              <button disabled={isLoading} className="w-full rounded-2xl bg-slate-900 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:opacity-50">
+                {isLoading ? "Загрузка..." : "Зарегистрироваться"}
               </button>
             </form>
           )}
 
           <div className="mt-5 rounded-2xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
-            Данные аккаунтов хранятся локально в браузере и доступны только после авторизации.
+            Данные аккаунтов хранятся в Firebase Firestore и синхронизируются между устройствами.
           </div>
         </div>
       </div>
