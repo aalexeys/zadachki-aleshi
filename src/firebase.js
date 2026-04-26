@@ -1,5 +1,12 @@
 import { initializeApp } from "firebase/app";
 import { getFirestore, doc, getDoc, setDoc } from "firebase/firestore";
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+} from "firebase/auth";
 
 const firebaseConfig = {
   apiKey: "AIzaSyDX32OKEy2_JIjBuu8iUvOIcuAxOJcaaAA",
@@ -12,6 +19,11 @@ const firebaseConfig = {
 
 const app = initializeApp(firebaseConfig);
 const db = getFirestore(app);
+
+export const auth = getAuth(app);
+export const googleProvider = new GoogleAuthProvider();
+
+export { signInWithPopup, signOut, onAuthStateChanged };
 
 export async function dbGetUser(login) {
   const snap = await getDoc(doc(db, "users", login));
