@@ -841,7 +841,6 @@ export default function ProjectTodoDashboard() {
           </button>
 
           <div className="mt-5 rounded-2xl bg-slate-50 p-4 text-xs leading-5 text-slate-500">
-            Вот это нихуя себе даже вход через гугл есть, еще и firebase оу ес
           </div>
         </div>
       </div>
